@@ -80,11 +80,15 @@ jobs:
 
     - name: Prepare release files
       run: |
-        # 将所有二进制文件移到artifacts根目录
-        find artifacts -name 'rfw-*' -type f -exec mv {} artifacts/ \;
+        # 创建临时目录存放所有二进制文件
+        mkdir -p release-files
 
-        # 删除空的子目录
-        find artifacts -type d -empty -delete
+        # 将所有二进制文件移到临时目录
+        find artifacts -type f -name 'rfw-*' -exec mv {} release-files/ \;
+
+        # 删除旧的artifacts目录并用临时目录替换
+        rm -rf artifacts
+        mv release-files artifacts
 
         # 创建统一的checksums文件
         cd artifacts
