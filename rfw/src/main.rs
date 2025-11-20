@@ -166,6 +166,17 @@ struct Opt {
     #[clap(long)]
     block_cn_wg: bool,
 
+    /// 屏蔽来自中国 IP 的 QUIC 协议入站连接
+    ///
+    /// 检测 QUIC 协议特征:
+    /// - QUIC v1 (RFC 9000)
+    /// - QUIC v2 (RFC 9369)
+    /// - Google QUIC
+    ///
+    /// 用途: 阻止基于 QUIC 的服务（如 HTTP/3）被滥用
+    #[clap(long)]
+    block_cn_quic: bool,
+
     /// 屏蔽来自中国 IP 的所有入站流量（不限协议）
     ///
     /// 最激进的规则，直接在 IP 层阻止所有中国来源的入站连接
@@ -194,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
         && !opt.block_cn_fet_strict
         && !opt.block_cn_fet_loose
         && !opt.block_cn_wg
+        && !opt.block_cn_quic
         && !opt.block_cn_all
     {
         println!("警告: 未启用任何防火墙规则，程序将运行但不执行任何过滤操作");
@@ -262,6 +274,10 @@ async fn main() -> anyhow::Result<()> {
         config_flags |= rfw_common::RULE_BLOCK_CN_WIREGUARD;
         info!("启用规则: 屏蔽中国 IP 的 WireGuard VPN 入站");
     }
+    if opt.block_cn_quic {
+        config_flags |= rfw_common::RULE_BLOCK_CN_QUIC;
+        info!("启用规则: 屏蔽中国 IP 的 QUIC 入站");
+    }
     if opt.block_cn_all {
         config_flags |= rfw_common::RULE_BLOCK_CN_ALL;
         info!("启用规则: 屏蔽中国 IP 的所有入站流量");
@@ -278,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         || opt.block_cn_fet_strict
         || opt.block_cn_fet_loose
         || opt.block_cn_wg
+        || opt.block_cn_quic
         || opt.block_cn_all
     {
         info!("检测到需要 GeoIP 规则，正在下载中国 IP 数据...");

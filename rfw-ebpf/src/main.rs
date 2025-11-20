@@ -115,6 +115,7 @@ const RULE_BLOCK_CN_FET_STRICT: u32 = 1 << 3; // FET 严格模式（默认阻止
 const RULE_BLOCK_CN_WIREGUARD: u32 = 1 << 4;
 const RULE_BLOCK_CN_ALL: u32 = 1 << 5;
 const RULE_BLOCK_CN_FET_LOOSE: u32 = 1 << 6; // FET 宽松模式（默认放过）
+const RULE_BLOCK_CN_QUIC: u32 = 1 << 7;
 
 // WireGuard 协议常量
 const WG_TYPE_HANDSHAKE_INIT: u8 = 1;
@@ -247,8 +248,7 @@ fn try_rfw(ctx: XdpContext) -> Result<u32, ()> {
                     let payload_size = end.saturating_sub(start + payload_offset);
 
                     // 没有payload，跳过检测（例如纯ACK包、FIN包等控制包）
-                    // 小包豁免：payload < 20 字节的包暂时放过
-                    if payload_size == 0 || payload_size < 20 {
+                    if payload_size == 0 {
                         return Ok(xdp_action::XDP_PASS);
                     }
 
@@ -316,8 +316,8 @@ fn try_rfw(ctx: XdpContext) -> Result<u32, ()> {
                             }
 
                             // 检查 FET（全加密流量）入站屏蔽规则
-                            // FET 检测需要至少 6 字节
-                            if !should_block && payload_size >= 6 {
+                            // FET 检测需要至少 16 字节
+                            if !should_block && payload_size >= 16 {
                                 // 判断模式：严格或宽松
                                 let strict_mode = (*config_flags & RULE_BLOCK_CN_FET_STRICT) != 0;
                                 let loose_mode = (*config_flags & RULE_BLOCK_CN_FET_LOOSE) != 0;
@@ -346,7 +346,10 @@ fn try_rfw(ctx: XdpContext) -> Result<u32, ()> {
                                     }
                                 }
                             }
-
+                            // 放过小包等后续大包再检查
+                            if payload_size <= 6 {
+                                return Ok(xdp_action::XDP_PASS);
+                            }
                             // 处理检测结果
                             if should_block {
                                 // 标记这个连接为已阻止，后续包也会被DROP
@@ -371,19 +374,34 @@ fn try_rfw(ctx: XdpContext) -> Result<u32, ()> {
             // 检查 WireGuard 入站屏蔽规则（来自中国的入站）
             if (*config_flags & RULE_BLOCK_CN_WIREGUARD) != 0 {
                 // 通过协议深度检测识别 WireGuard 流量
-                if is_wireguard_packet(&ctx, payload_offset)? {
-                    if is_cn_ip(src_ip)? {
-                        let src_port = u16::from_be(unsafe { (*udp_hdr).source });
-                        let dst_port = u16::from_be(unsafe { (*udp_hdr).dest });
-                        info!(
-                            &ctx,
-                            "BLOCKED: WireGuard VPN 入站流量来自中国, 源 {:i}:{} -> 目标端口 {}",
-                            u32::from_be(src_ip),
-                            src_port,
-                            dst_port
-                        );
-                        return Ok(xdp_action::XDP_DROP);
-                    }
+                if is_cn_ip(src_ip)? && is_wireguard_packet(&ctx, payload_offset)? {
+                    let src_port = u16::from_be(unsafe { (*udp_hdr).source });
+                    let dst_port = u16::from_be(unsafe { (*udp_hdr).dest });
+                    info!(
+                        &ctx,
+                        "BLOCKED: WireGuard VPN 入站流量来自中国, 源 {:i}:{} -> 目标端口 {}",
+                        u32::from_be(src_ip),
+                        src_port,
+                        dst_port
+                    );
+                    return Ok(xdp_action::XDP_DROP);
+                }
+            }
+
+            // 检查 QUIC 入站屏蔽规则（来自中国的入站）
+            if (*config_flags & RULE_BLOCK_CN_QUIC) != 0 {
+                // 通过协议深度检测识别 QUIC 流量
+                if is_cn_ip(src_ip)? && is_quic_packet(&ctx, payload_offset)? {
+                    let src_port = u16::from_be(unsafe { (*udp_hdr).source });
+                    let dst_port = u16::from_be(unsafe { (*udp_hdr).dest });
+                    info!(
+                        &ctx,
+                        "BLOCKED: QUIC 入站流量来自中国, 源 {:i}:{} -> 目标端口 {}",
+                        u32::from_be(src_ip),
+                        src_port,
+                        dst_port
+                    );
+                    return Ok(xdp_action::XDP_DROP);
                 }
             }
         }
@@ -859,6 +877,74 @@ fn is_wireguard_packet(ctx: &XdpContext, payload_offset: usize) -> Result<bool, 
         _ => {
             // 未知的消息类型
             return Ok(false);
+        }
+    }
+
+    Ok(false)
+}
+
+// 检测是否为 QUIC 协议数据包
+// QUIC 协议特征：
+// - 长头部包（Long Header）：首字节最高位为 1，包含版本号字段
+//   - QUIC v1: 版本号 0x00000001
+//   - QUIC v2: 版本号 0x6b3343cf
+//   - 版本协商包: 版本号 0x00000000
+// - 短头部包（Short Header）：首字节最高位为 0（已建立连接）
+#[inline(always)]
+fn is_quic_packet(ctx: &XdpContext, payload_offset: usize) -> Result<bool, ()> {
+    // 读取前5个字节（首字节 + 4字节版本号）
+    let header = match ptr_at::<[u8; 5]>(ctx, payload_offset) {
+        Ok(ptr) => unsafe { *ptr },
+        Err(_) => return Ok(false),
+    };
+
+    let first_byte = header[0];
+
+    // 检查长头部包（最高位为 1）
+    if (first_byte & 0x80) == 0x80 {
+        // 读取版本号（大端序）
+        let version = ((header[1] as u32) << 24)
+            | ((header[2] as u32) << 16)
+            | ((header[3] as u32) << 8)
+            | (header[4] as u32);
+
+        // 检查常见的 QUIC 版本号
+        // 0x00000000: 版本协商包
+        // 0x00000001: QUIC v1 (RFC 9000)
+        // 0x6b3343cf: QUIC v2 (RFC 9369)
+        // 0x51303xxx: Google QUIC (Q0xx)
+        if version == 0x00000000
+            || version == 0x00000001
+            || version == 0x6b3343cf
+            || (version & 0xFFFF0000) == 0x51303000
+        {
+            return Ok(true);
+        }
+
+        // 其他小版本号也可能是 QUIC（允许未来版本）
+        // 但为了减少误判，只识别已知版本
+        if version != 0 && version < 0x0000000a {
+            return Ok(true);
+        }
+    } else {
+        // 短头部包（最高位为 0）
+        // 这些是已建立连接的数据包，更难识别
+        // 但如果首字节符合 QUIC 短头部格式，也认为是 QUIC
+        // 短头部格式：0XXX XXXX (最高位为0)
+        // 为了减少误判，我们只在有明确特征时才识别
+
+        // 检查是否有 QUIC 连接 ID（通过数据包长度判断）
+        let start = ctx.data();
+        let end = ctx.data_end();
+        let packet_len = end.saturating_sub(start + payload_offset);
+
+        // QUIC 短头部包通常至少有 20 字节
+        // 并且第一个字节的特定位模式
+        if packet_len >= 20 {
+            // 如果固定位（bit 6）为 1，这是 QUIC v1/v2 的要求
+            if (first_byte & 0x40) == 0x40 {
+                return Ok(true);
+            }
         }
     }
 

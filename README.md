@@ -22,7 +22,8 @@ Rust Firewall - 基于 eBPF/XDP 的高性能防火墙，支持协议深度检测
 3. **屏蔽中国 IP 的 SOCKS5 入站** - 使用协议深度检测识别 SOCKS5 流量，阻止来自中国 IP 的 SOCKS5 入站连接
 4. **屏蔽中国 IP 的全加密流量入站** - 使用 FET 算法识别 Shadowsocks、V2Ray 等加密代理，阻止来自中国 IP 的全加密代理流量
 5. **屏蔽中国 IP 的 WireGuard VPN 入站** - 精准识别 WireGuard VPN 协议，阻止来自中国 IP 的 WireGuard 流量
-6. **屏蔽中国 IP 的所有入站流量** - 阻止所有来自中国 IP 的入站连接（不限协议、不限端口）
+6. **屏蔽中国 IP 的 QUIC 入站** - 精准识别 QUIC 协议（HTTP/3），阻止来自中国 IP 的 QUIC 流量
+7. **屏蔽中国 IP 的所有入站流量** - 阻止所有来自中国 IP 的入站连接（不限协议、不限端口）
 
 ### 协议深度检测 (DPI)
 
@@ -32,6 +33,7 @@ Rust Firewall - 基于 eBPF/XDP 的高性能防火墙，支持协议深度检测
 - **SOCKS5 检测**：识别 SOCKS5 握手协议特征
 - **全加密流量检测**：使用统计算法识别 Shadowsocks、V2Ray 等加密代理
 - **WireGuard 检测**：精准识别 WireGuard VPN 协议
+- **QUIC 检测**：识别 QUIC v1/v2 和 Google QUIC 协议（HTTP/3）
 - **不依赖端口号**：即使服务运行在非标准端口也能识别
 
 ### 性能特性
@@ -76,10 +78,11 @@ sudo ./target/release/rfw --iface eth0 \
   --block-cn-http \
   --block-cn-socks5 \
   --block-cn-fet-strict \
-  --block-cn-wg
+  --block-cn-wg \
+  --block-cn-quic
 
 # 启用详细日志
-sudo RUST_LOG=info ./target/release/rfw --iface eth0 --block-cn-wg
+sudo RUST_LOG=info ./target/release/rfw --iface eth0 --block-cn-wg --block-cn-quic
 ```
 
 ## 使用说明
@@ -162,7 +165,32 @@ sudo ./target/release/rfw --iface eth0 --block-cn-wg
 - 误报率极低，性能开销小
 - 不会影响其他 UDP 应用
 
-#### 6. 屏蔽中国 IP 的所有入站流量
+#### 6. 屏蔽中国 IP 的 QUIC 入站
+
+```bash
+sudo ./target/release/rfw --iface eth0 --block-cn-quic
+```
+
+阻止来自中国 IP 的 QUIC 协议流量（HTTP/3）
+
+**特点：**
+- 精准识别 QUIC v1（RFC 9000）和 QUIC v2（RFC 9369）
+- 支持检测 Google QUIC 协议
+- 识别长头部和短头部数据包
+- 误报率极低，不影响其他 UDP 应用
+
+**支持的 QUIC 版本：**
+- QUIC v1（RFC 9000，版本号 0x00000001）
+- QUIC v2（RFC 9369，版本号 0x6b3343cf）
+- Google QUIC（Q0xx 系列）
+- 版本协商包
+
+**使用场景：**
+- 阻止基于 HTTP/3 的服务被滥用
+- 防止 QUIC 代理服务器被滥用
+- 限制新一代加密传输协议的入站连接
+
+#### 7. 屏蔽中国 IP 的所有入站流量
 
 ```bash
 sudo ./target/release/rfw --iface eth0 --block-cn-all
@@ -193,13 +221,15 @@ sudo ./target/release/rfw --iface eth0 \
   --block-cn-socks5 \
   --block-cn-fet-strict \
   --block-cn-wg \
+  --block-cn-quic
 
 # 仅启用 GeoIP 相关规则
 sudo ./target/release/rfw --iface eth0 \
   --block-cn-http \
   --block-cn-socks5 \
   --block-cn-fet-strict \
-  --block-cn-wg
+  --block-cn-wg \
+  --block-cn-quic
 
 # 仅启用协议检测规则（HTTP + SOCKS5）
 sudo ./target/release/rfw --iface eth0 \
@@ -210,9 +240,18 @@ sudo ./target/release/rfw --iface eth0 \
 sudo ./target/release/rfw --iface eth0 \
   --block-cn-fet-strict
 
+# 仅启用 VPN/代理协议检测（WireGuard + QUIC）
+sudo ./target/release/rfw --iface eth0 \
+  --block-cn-wg \
+  --block-cn-quic
+
 # 仅启用 WireGuard VPN 检测
 sudo ./target/release/rfw --iface eth0 \
   --block-cn-wg
+
+# 仅启用 QUIC 协议检测
+sudo ./target/release/rfw --iface eth0 \
+  --block-cn-quic
 
 # 仅启用屏蔽所有中国 IP 入站（最简单直接）
 sudo ./target/release/rfw --iface eth0 \
@@ -260,7 +299,7 @@ rfw 基于 **eBPF/XDP** 技术，使用 **Rust** 语言开发。
 2. 检查是否为 IPv4 数据包（**目前仅支持 IPv4**）
 3. 根据启用的规则进行检测：
    - GeoIP 检测：检查源 IP 是否属于中国
-   - 协议检测：识别 HTTP、SOCKS5、WireGuard 等协议特征
+   - 协议检测：识别 HTTP、SOCKS5、WireGuard、QUIC 等协议特征
    - 端口检测：识别 Email 发送端口
 4. 返回判决：允许通过或丢弃
 

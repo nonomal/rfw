@@ -15,6 +15,7 @@ pub const RULE_BLOCK_CN_FET_STRICT: u32 = 1 << 3; // 屏蔽中国 IP 的全加�
 pub const RULE_BLOCK_CN_WIREGUARD: u32 = 1 << 4; // 屏蔽中国 IP 的 WireGuard 入站
 pub const RULE_BLOCK_CN_ALL: u32 = 1 << 5; // 屏蔽中国 IP 的所有入站流量
 pub const RULE_BLOCK_CN_FET_LOOSE: u32 = 1 << 6; // 屏蔽中国 IP 的全加密流量入站 (宽松模式，默认放过)
+pub const RULE_BLOCK_CN_QUIC: u32 = 1 << 7; // 屏蔽中国 IP 的 QUIC 入站
 
 impl FirewallConfig {
     pub fn new() -> Self {
